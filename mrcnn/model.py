@@ -24,6 +24,9 @@ import keras.engine as KE
 import keras.models as KM
 
 from mrcnn import utils
+config = tf.ConfigProto()
+config.gpu_options.allow_growth = True
+tf.keras.backend.set_session(tf.Session(config=config))
 
 # Requires TensorFlow 1.3+ and Keras 2.0.8+.
 from distutils.version import LooseVersion
@@ -2370,9 +2373,13 @@ class MaskRCNN():
             validation_data=val_generator,
             validation_steps=self.config.VALIDATION_STEPS,
             max_queue_size=100,
-            workers=workers,
-            use_multiprocessing=True,
+            workers =1
+
+
         )
+        #workers=workers,
+        #use_multiprocessing=True,
+        #lägg till use_multiprocessing =True
         self.epoch = max(self.epoch, epochs)
 
     def mold_inputs(self, images):
@@ -2490,6 +2497,8 @@ class MaskRCNN():
         scores: [N] float probability scores for the class IDs
         masks: [H, W, N] instance binary masks
         """
+        print(len(images))
+        print(self.config.BATCH_SIZE)
         assert self.mode == "inference", "Create model in inference mode."
         assert len(
             images) == self.config.BATCH_SIZE, "len(images) must be equal to BATCH_SIZE"

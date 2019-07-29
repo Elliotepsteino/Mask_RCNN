@@ -33,6 +33,10 @@ import json
 import datetime
 import numpy as np
 import skimage.draw
+import tensorflow as tf
+config = tf.ConfigProto()
+config.gpu_options.allow_growth = True
+tf.keras.backend.set_session(tf.Session(config=config))
 
 # Root directory of the project
 ROOT_DIR = os.path.abspath("../../")
@@ -41,10 +45,6 @@ ROOT_DIR = os.path.abspath("../../")
 sys.path.append(ROOT_DIR)  # To find local version of the library
 from mrcnn.config import Config
 from mrcnn import model as modellib, utils
-import tensorflow as tf
-config = tf.ConfigProto()
-config.gpu_options.allow_growth = True
-tf.keras.backend.set_session(tf.Session(config=config))
 
 # Path to trained weights file
 COCO_WEIGHTS_PATH = os.path.join(ROOT_DIR, "mask_rcnn_coco.h5")
@@ -68,13 +68,14 @@ class BalloonConfig(Config):
     # We use a GPU with 12GB memory, which can fit two images.
     # Adjust down if you use a smaller GPU.
     IMAGES_PER_GPU = 1
-    #2 orig
 
     # Number of classes (including background)
-    NUM_CLASSES = 1 + 1  # Background + balloon
+    NUM_CLASSES = 1 + 2 # Background + balloon
 
     # Number of training steps per epoch
     STEPS_PER_EPOCH = 100
+
+    #VALIDATION_STEPS = 5
 
     # Skip detections with < 90% confidence
     DETECTION_MIN_CONFIDENCE = 0.9
@@ -86,34 +87,24 @@ class BalloonConfig(Config):
 
 class BalloonDataset(utils.Dataset):
 
+
     def load_balloon(self, dataset_dir, subset):
-        """Load a subset of the Balloon dataset.
+        """Load a subset of the number dataset.
         dataset_dir: Root directory of the dataset.
         subset: Subset to load: train or val
         """
+        print(dataset_dir)
         # Add classes. We have only one class to add.
-        self.add_class("balloon", 1, "balloon")
+        self.add_class("object", 1, "Benign")
+        self.add_class("object", 2, "Malign")
 
+
+
+        # Train or validation dataset?
         # Train or validation dataset?
         assert subset in ["train", "val"]
         dataset_dir = os.path.join(dataset_dir, subset)
 
-        # Load annotations
-        # VGG Image Annotator (up to version 1.6) saves each image in the form:
-        # { 'filename': '28503151_5b5b7ec140_b.jpg',
-        #   'regions': {
-        #       '0': {
-        #           'region_attributes': {},
-        #           'shape_attributes': {
-        #               'all_points_x': [...],
-        #               'all_points_y': [...],
-        #               'name': 'polygon'}},
-        #       ... more regions ...
-        #   },
-        #   'size': 100202
-        # }
-        # We mostly care about the x and y coordinates of each region
-        # Note: In VIA 2.0, regions was changed from a dict to a list.
         annotations = json.load(open(os.path.join(dataset_dir, "via_region_data.json")))
         annotations = list(annotations.values())  # don't need the dict keys
 
@@ -124,14 +115,28 @@ class BalloonDataset(utils.Dataset):
         # Add images
         for a in annotations:
             # Get the x, y coordinaets of points of the polygons that make up
-            # the outline of each object instance. These are stores in the
+            # the outline of each object instance. There are stores in the
             # shape_attributes (see json format above)
-            # The if condition is needed to support VIA versions 1.x and 2.x.
-            if type(a['regions']) is dict:
-                polygons = [r['shape_attributes'] for r in a['regions'].values()]
-            else:
-                polygons = [r['shape_attributes'] for r in a['regions']] 
-
+            # for b in a['regions'].values():
+            #    polygons = [{**b['shape_attributes'], **b['region_attributes']}]
+            # print("string=", polygons)
+            # for r in a['regions'].values():
+            #    polygons = [r['shape_attributes']]
+            #    # print("polygons=", polygons)
+            #    multi_numbers = [r['region_attributes']]
+            # print("multi_numbers=", multi_numbers)
+            polygons = [r['shape_attributes'] for r in a['regions'].values()]
+            objects = [s['region_attributes'] for s in a['regions'].values()]
+            # print("multi_numbers=", multi_numbers)
+            print("objects=", objects)
+            #print("num_ids=", num_ids)
+            # num_ids = [n for n in multi_numbers['number'].values()]
+            # for n in multi_numbers:
+            class_ids = [int(n['object']) for n in objects]
+            #num_ids = [n['Object'] for n in objects]
+            # print("num_ids=", num_ids)
+            # print("num_ids_new=", num_ids_new)
+            # categories = [s['region_attributes'] for s in a['regions'].values()]
             # load_mask() needs the image size to convert polygons to masks.
             # Unfortunately, VIA doesn't include it in JSON, so we must read
             # the image. This is only managable since the dataset is tiny.
@@ -140,45 +145,52 @@ class BalloonDataset(utils.Dataset):
             height, width = image.shape[:2]
 
             self.add_image(
-                "balloon",
+                "object",
                 image_id=a['filename'],  # use file name as a unique image id
                 path=image_path,
                 width=width, height=height,
-                polygons=polygons)
+                polygons=polygons,
+                class_ids=class_ids)
 
-    def load_mask(self, image_id):
+
+
+
+    def load_mask(self, image_id):  #new
         """Generate instance masks for an image.
        Returns:
         masks: A bool array of shape [height, width, instance count] with
             one mask per instance.
         class_ids: a 1D array of class IDs of the instance masks.
         """
-        # If not a balloon dataset image, delegate to parent class.
-        image_info = self.image_info[image_id]
-        if image_info["source"] != "balloon":
+        # If not a number dataset image, delegate to parent class.
+        info = self.image_info[image_id]
+        if info["source"] != "object":
             return super(self.__class__, self).load_mask(image_id)
-
+        class_ids = info['class_ids']
         # Convert polygons to a bitmap mask of shape
         # [height, width, instance_count]
-        info = self.image_info[image_id]
+
         mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
                         dtype=np.uint8)
+
         for i, p in enumerate(info["polygons"]):
             # Get indexes of pixels inside the polygon and set them to 1
             rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
             mask[rr, cc, i] = 1
-
-        # Return mask, and array of class IDs of each instance. Since we have
-        # one class ID only, we return an array of 1s
-        return mask.astype(np.bool), np.ones([mask.shape[-1]], dtype=np.int32)
+        #print("info['class_ids']=", info['class_ids'])
+        # Map class names to class IDs.
+        class_ids = np.array(class_ids, dtype=np.int32)
+        #num_ids = np.array(num_ids)
+        return mask, class_ids
 
     def image_reference(self, image_id):
         """Return the path of the image."""
         info = self.image_info[image_id]
-        if info["source"] == "balloon":
+        if info["source"] == "object":
             return info["path"]
         else:
             super(self.__class__, self).image_reference(image_id)
+
 
 
 def train(model):
@@ -354,7 +366,7 @@ if __name__ == '__main__':
         weights_path = args.weights
 
     # Load weights
-    print("Loading weights ", weights_path)
+    print("Loading weights hej", weights_path)
     if args.weights.lower() == "coco":
         # Exclude the last layers because they require a matching
         # number of classes
